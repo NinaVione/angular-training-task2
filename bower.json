@@ -1,0 +1,8 @@
+{
+    "name": "web-app",
+    "version": "0.0.1",
+    "dependencies": {
+    	"lodash": "~4.0.0",
+        "bootstrap": "~3.3.6"
+    }
+}
