@@ -1,96 +1,24 @@
-'use strict'
+"use strict";
 
 function scope() {
-  this.$$watchers = []; // array of watchers
-  this.$$asyncQueue = []; // adds an expressions to the asyncQueue (using $scope.$evalAsync())
-  this.$$postDigestQueue = []; // array of functions
-  this.$$phase = null; //  smth like a flag; if you try to $apply during a $digest an error appear
+  this.watchGroup = []; // array of watchers
+  this.postDigestGroup = []; // array of functions
+  this.phase = null; //  smth like a flag; if you try to $apply during a $digest an error appear
 }
 
-scope.prototype.$beginPhase = function(phase) {
-  if (this.$$phase) {
-    throw this.$$phase + ' already in progress.';
-  }
-  this.$$phase = phase;
-};
-
-scope.prototype.$clearPhase = function() {
-  this.$$phase = null;
-};
-
-
 /**
-* WATCH
-* The listener is called whenever anything within the watchFn has changed
-* The watchFn is called on every call to $digest()
+* APPLY
+* it's used to execute an expression in angular from outside of the angular framework
 **/
-scope.prototype.$watch = function(watchFn, listenerFn, valueEq) {
-  var watcher = {
-    watchFn: watchFn,
-    listenerFn: listenerFn || function() {},
-    valueEq: !!valueEq
-  };
-  this.$$watchers.push(watcher);
-};
-
-scope.prototype.$$areEqual = function(newValue, oldValue, valueEq) {
-  if (valueEq) {
-    return _.isEqual(newValue, oldValue);
-  } else {
-    return newValue === oldValue;
-  }
-};
-
-scope.prototype.$$digestOnce = function() {
-  var self  = this;
-  var dirty;
-  _.forEach(this.$$watchers, function(watch) {
-    try {
-      var newValue = watch.watchFn(self);
-      var oldValue = watch.last;
-      if (!self.$$areEqual(newValue, oldValue, watch.valueEq)) {
-        watch.listenerFn(newValue, oldValue, self);
-        dirty = true;
-      }
-      watch.last = (watch.valueEq ? _.cloneDeep(newValue) : newValue);
-    } catch(e) {
-      console.error(e);
-    }
-  });
-  return dirty;
-};
-
-/**
-* DIGEST
-* Processes all of the watchers of the current scope
-**/
-scope.prototype.$digest = function(){
-  var iteration = 3;
-  var dirty;
-  this.$beginPhase("$digest");
-  do {
-    while (this.$$asyncQueue.length) {
-      try {
-        var asyncTask = this.$$asyncQueue.shift();
-        this.$eval(asyncTask.expression);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    dirty = this.$$digestOnce();
-    if (dirty && !(iteration--)) {
-      this.$clearPhase();
-      throw "3 digest iterations reached";
-    }
-  } while (dirty);
-  this.$clearPhase();
-
-  while (this.$$postDigestQueue.length) {
-    try {
-      this.$$postDigestQueue.shift()();
-    } catch (e) {
-      console.error(e);
-    }
+scope.prototype.apply = function(expression) {
+  try {
+    this.startPhase("APPLY");
+    return this.eval(expression);
+  } catch(e) {
+    console.error(e);
+  } finally {
+    this.endPhase("APPLY");
+    this.digest();
   }
 };
 
@@ -98,160 +26,188 @@ scope.prototype.$digest = function(){
 * EVAL
 * Executes the expression on the current scope and returns the result
 **/
-scope.prototype.$eval = function(expr, locals) {
-  return expr(this, locals);
+scope.prototype.eval = function(expression, locals) {
+  return expression(this, locals);
 };
 
-
 /**
-* APPLY
-* it's used to execute an expression in angular from outside of the angular framework
+* WATCH
+* The listener is called whenever anything within the watchFn has changed
+* The watchFn is called on every call to $digest()
 **/
-scope.prototype.$apply = function(expr) {
-  try {
-    this.$beginPhase("$apply");
-    return this.$eval(expr);
-  } finally {
-    this.$clearPhase();
-    this.$digest();
+scope.prototype.watch = function(watchFn, listenerFn, valueEq) {
+  var w = {
+    watchFn: watchFn,
+    listenerFn: listenerFn,
+    valueEq: valueEq
   }
+  this.watchGroup.push(w);
 };
 
 /**
-* EVAL ASYNC
-* Executes the expression on the current scope at a later point in time.
+* DIGEST
+* Processes all of the watchers of the current scope
 **/
-scope.prototype.$evalAsync = function(expr) {
-  var self = this;
-  if (!self.$$phase && !self.$$asyncQueue.length) {
-    setTimeout(function() {
-      if (self.$$asyncQueue.length) {
-        self.$digest();
+scope.prototype.digest = function() {
+  var thisRef = this;
+  var dirty;
+  this.startPhase("DIGEST");
+  var oldValue;
+  var newValue;
+  var interation = 3;
+  _.forEach(this.watchGroup, function(watch) {
+    try {
+      interation--;
+      oldValue = watch.oldValue;
+      newValue = watch.watchFn(thisRef);
+      console.log("oldValue: " + oldValue);
+      console.log("newValue: " + newValue);
+      if(oldValue != newValue) {
+        watch.listenerFn(newValue, oldValue, thisRef);
+        dirty = true;
       }
-    }, 0);
+      if (dirty && !interation) {
+        throw "3 interations are already made";
+      }
+      watch.oldValue = (watch.valueEq ? _.cloneDeep(newValue) : newValue);
+    } catch(e) {
+      console.error(e);
+    }
+  });
+  this.endPhase("DIGEST");
+
+  var len = this.postDigestGroup.length;
+  for (var i = 0; i < len; i++) {
+      this.postDigestGroup.shift()();
   }
-  self.$$asyncQueue.push({scope: self, expression: expr});
+};
+
+
+scope.prototype.startPhase = function(phase) {
+  this.phase = phase;
+  console.log(phase + " phase is started");
+};
+
+scope.prototype.endPhase = function(phase) {
+  this.phase = null;
+  console.log(phase + " phase is ended");
 };
 
 /**
 * POST DIGEST
 * set of functions
 **/
-scope.prototype.$$postDigest = function(fn) {
-  this.$$postDigestQueue.push(fn);
+scope.prototype.postDigest = function(func) {
+  console.log("----- post digest start -----");
+  this.postDigestGroup.push(func);
+  console.log("----- post digest end -----");
 };
 
-var scope = new scope();
+/*************************************************************************/
 
 /**
-* setting up array of muffins
-* calling the functions
+* creating a SCOPE
 **/
-scope.muffins = ['Ocelot malkin kitten yet british shorthair.', 'Siberian mouser.'];
+var scope = new scope();
 
-scope.counterValue = 0; // counts a number of values changing
-scope.counterRef = 0; //counts a number of references changing
+scope.muffins = "Ocelot malkin kitten yet british shorthair.";
+scope.counter = 0;
 
-scope.$watch(
+/**
+* running a WATCH function
+**/
+
+scope.watch(
   function(scope) {
     return scope.muffins;
   },
   function(newValue, oldValue, scope) {
-    scope.counterRef++;
+    scope.counter++;
   }
 );
 
-scope.$watch(
-  function(scope) {
-    return scope.muffins;
-  },
-  function(newValue, oldValue, scope) {
-    scope.counterValue++;
-  },
-  true //valueEq = true in $watch
-);
+/**
+* counter will not change because of no DIGEST
+**/
+console.log(scope.counter);
 
-console.log('WATCH, NO DIGEST: counterRef: ' + scope.counterRef); //0
-console.log('WATCH, NO DIGEST: counterValue: ' + scope.counterValue); //0
+/**
+* running a DIGEST, changing the counter
+**/
+scope.digest();
+console.log(scope.counter);
 
-scope.$digest();
-console.log('DIGEST: counterRef: ' + scope.counterRef); //1
-console.log('DIGEST: counterValue: ' + scope.counterValue); //1
+scope.muffins = "Manx maine coon, but tiger for egyptian mau.";
+scope.digest();
+console.log(scope.counter);
 
-scope.muffins[1] = ('Nom-nom.');
-scope.$digest();
-console.log('DIGEST: counterRef: ' + scope.counterRef); //1 (reference is the same)
-console.log('DIGEST: counterValue: ' + scope.counterValue); //2
-
-scope.muffins = 'Ocicat. Havana brown malkin.';
-
-scope.$digest();
-console.log('DIGEST: counterRef: ' + scope.counterRef); //2
-console.log('DIGEST: counterValue: ' + scope.counterValue); //3
-
-scope.$apply(function(scope) {
-  scope.muffins = 'Manx maine coon, but tiger for egyptian mau.';
+/**
+* calling an APPLY function that will call a DIGEST, so the counter will be changed
+**/
+scope.apply(function(scope) {
+  scope.muffins = "Cougar ocicat and malkin and lynx or american bobtail, american shorthair.";
 });
-console.log('APPLY: counterValue: ' + scope.counterValue); //4
+console.log(scope.counter);
 
-scope.asyncEvaled = false;
 
-scope.$watch(
-  function(scope) {
-    scope.$evalAsync(function(scope) {
-      throw "async error";
-    });
-    return scope.muffins;
-  },
-  function(newValue, oldValue, scope) {
-    scope.counterValue++;
-    scope.$evalAsync(function(scope) {
-      scope.asyncEvaled = true;
-    });
-    console.log("INSIDE LISTENER: asyncEvaled: " + scope.asyncEvaled); // false
-  }
-);
-
-scope.muffins = 'Cougar ocicat and malkin and lynx or american bobtail, american shorthair.';
-scope.$digest();
-console.log("DIGEST: asyncEvaled: " + scope.asyncEvaled); //true
-
-scope.$evalAsync(function(scope) {
-  scope.asyncEvaled = false;
+/**
+* POST DIGEST
+**/
+var catnip = "";
+scope.postDigest(function() {
+  catnip = "Cornish rex tiger.";
 });
+console.log("catnip: " + catnip);
 
-setTimeout(function() {
-  console.log("setTimeout: asyncEvaled: " + scope.asyncEvaled); //true
-}, 1000);
+scope.digest();
+console.log("catnip: " + catnip);
 
-var postDigestInvoked = false;
-
-scope.$$postDigest(function() {
-  postDigestInvoked = true;
-});
-
-scope.$digest();
-console.log('postDigestInvoked: ' + postDigestInvoked); //true
-
-scope.muffins = 'Sphynx munchkin tomcat.';
-
-scope.$watch(
+/**
+* disable watch function
+**/
+scope.catIpsum = "Ocicat. Havana brown malkin.";
+var removeWatch = scope.watch(
   function(scope) {
-    return scope.counterValue;
+    return scope.catIpsum;
   },
   function(newValue, oldValue, scope) {
-    scope.counterRef++;
+    scope.counter++;
   }
 );
 
-scope.$watch(
+scope.catIpsum = "Cheetah american bobtail.";
+scope.digest();
+console.log(scope.counter);
+
+scope.stop = function() {
+  removeWatch();
+};
+
+scope.digest();
+console.log(scope.counter);
+
+/**
+* infinity loop
+* watchers look each other
+**/
+scope.value = 0;
+
+scope.watch(
   function(scope) {
-    return scope.counterRef;
+    return scope.counter;
   },
   function(newValue, oldValue, scope) {
-    scope.counterValue++;
+    scope.value++;
   }
 );
 
-scope.$digest(); // should be an error because of watchers look each other
+scope.watch(
+  function(scope) {
+    return scope.value;
+  },
+  function(newValue, oldValue, scope) {
+    scope.counter++;
+  }
+);
 
+scope.digest();
