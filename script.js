@@ -4,6 +4,7 @@ function scope() {
   this.watchGroup = []; // array of watchers
   this.postDigestGroup = []; // array of functions
   this.phase = null; //  smth like a flag; if you try to $apply during a $digest an error appear
+  this.asyncQueue = [];
 }
 
 /**
@@ -31,17 +32,66 @@ scope.prototype.eval = function(expression, locals) {
 };
 
 /**
+* EVAL ASYNC
+**/
+scope.prototype.evalAsync = function(expression) {
+  var thisRef = this;
+  if (!thisRef.phase && !thisRef.asyncQueue.length) {
+    setTimeout(function() {
+      if (thisRef.asyncQueue.length) {
+        thisRef.digest();
+      }
+    }, 0);
+  }
+  var async = {
+    scope: thisRef,
+    expression: expression
+  };
+  thisRef.asyncQueue.push(async);
+};
+
+/**
 * WATCH
 * The listener is called whenever anything within the watchFn has changed
 * The watchFn is called on every call to $digest()
 **/
 scope.prototype.watch = function(watchFn, listenerFn, valueEq) {
+  var thisRef = this;
   var w = {
     watchFn: watchFn,
     listenerFn: listenerFn,
     valueEq: valueEq
   }
   this.watchGroup.push(w);
+  return function() {
+    var index = thisRef.watchGroup.indexOf(w);
+    if (index >= 0) {
+      thisRef.watchGroup.splice(index, 1);
+    }
+  };
+};
+
+scope.prototype.digestCall = function() {
+  var thisRef = this;
+  var dirty;
+  var oldValue;
+  var newValue
+  _.forEach(this.watchGroup, function(watch) {
+    try {
+      oldValue = watch.oldValue;
+      newValue = watch.watchFn(thisRef);
+/*      console.log("oldValue: " + oldValue);
+      console.log("newValue: " + newValue);*/
+      if(oldValue != newValue) {
+        watch.listenerFn(newValue, oldValue, thisRef);
+        dirty = true;
+      }
+      watch.oldValue = (watch.valueEq ? _.cloneDeep(newValue) : newValue);
+    } catch(e) {
+      console.error(e);
+    }
+  });
+  return dirty;
 };
 
 /**
@@ -49,36 +99,34 @@ scope.prototype.watch = function(watchFn, listenerFn, valueEq) {
 * Processes all of the watchers of the current scope
 **/
 scope.prototype.digest = function() {
-  var thisRef = this;
   var dirty;
-  this.startPhase("DIGEST");
-  var oldValue;
-  var newValue;
   var interation = 3;
-  _.forEach(this.watchGroup, function(watch) {
-    try {
-      interation--;
-      oldValue = watch.oldValue;
-      newValue = watch.watchFn(thisRef);
-      console.log("oldValue: " + oldValue);
-      console.log("newValue: " + newValue);
-      if(oldValue != newValue) {
-        watch.listenerFn(newValue, oldValue, thisRef);
-        dirty = true;
+  this.startPhase("DIGEST");
+  do {
+    var len = this.asyncQueue.length;
+    for (var i = 0; i < len; i++) {
+      try {
+        var async = this.asyncQueue.shift();
+        this.eval(async.expression);
+      } catch(e) {
+        console.error(e);
       }
-      if (dirty && !interation) {
-        throw "3 interations are already made";
-      }
-      watch.oldValue = (watch.valueEq ? _.cloneDeep(newValue) : newValue);
-    } catch(e) {
-      console.error(e);
     }
-  });
+    dirty = this.digestCall();
+    if (dirty && !(interation--)) {
+      this.endPhase("DIGEST");
+      throw "3 interations are already made";
+    }
+  } while(dirty);
   this.endPhase("DIGEST");
 
   var len = this.postDigestGroup.length;
   for (var i = 0; i < len; i++) {
+    try {
       this.postDigestGroup.shift()();
+    } catch(e) {
+      console.error(e);
+    }
   }
 };
 
@@ -185,6 +233,24 @@ scope.stop = function() {
 
 scope.digest();
 console.log(scope.counter);
+
+/**
+* EVAL ASYNC ERROR
+**/
+scope.catIpsum = "Cheetah."
+scope.watch(
+  function(scope) {
+    scope.evalAsync(function(scope) {
+      throw "ASYNC ERROR";
+    });
+    return scope.catIpsum;
+  },
+  function(newValue, oldValue, scope) {
+    scope.counter++;
+  }
+);
+scope.digest();
+console.log("EVAL ASYNC: " + scope.counter);
 
 /**
 * infinity loop
